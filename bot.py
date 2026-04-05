@@ -21,9 +21,8 @@ def keep_alive(): Thread(target=run).start()
 TOKEN = "8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg"
 FILE_NAME = "data.csv"
 
-search_context = {}
 last_range = {}
-stop_flags = {}   # 🔥 NEW
+stop_flags = {}
 
 # ================= FILE =================
 def init_file():
@@ -37,8 +36,8 @@ def save_data(name, roll, board, mobile, date, tran_id):
 
 # ================= SCRAPER =================
 def get_tran_ids(roll):
-    url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Search?searchStr={roll}"
     try:
+        url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Search?searchStr={roll}"
         res = requests.get(url, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         table = soup.find("table")
@@ -48,8 +47,8 @@ def get_tran_ids(roll):
         return []
 
 def get_full_data(tran_id):
-    url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Voucher/{tran_id}"
     try:
+        url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Voucher/{tran_id}"
         res = requests.get(url, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         lines = [l.strip() for l in soup.get_text("\n").split("\n") if l.strip()]
@@ -60,7 +59,12 @@ def get_full_data(tran_id):
                     return lines[i+1]
             return "N/A"
 
-        name, roll, board, mobile, date = find("Name"), find("Roll"), find("Board"), find("Mobile"), find("Date")
+        name = find("Name")
+        roll = find("Roll")
+        board = find("Board")
+        mobile = find("Mobile")
+        date = find("Date")
+
         save_data(name, roll, board, mobile, date, tran_id)
 
         return f"<pre>\nName   : {name}\nRoll   : {roll}\nBoard  : {board}\nMobile : {mobile}\nDate   : {date}\nID     : {tran_id}\n</pre>", mobile
@@ -86,10 +90,9 @@ def get_contact_buttons(mobile):
     ])
 
 # ================= MAIN ENGINE =================
-async def run_search_logic(message, context, start, end):
+async def run_search_logic(message, start, end):
     user_id = message.chat_id
-
-    stop_flags[user_id] = False  # 🔥 reset
+    stop_flags[user_id] = False
 
     status_msg = await message.reply_text("⏳ Starting...", reply_markup=stop_button())
 
@@ -100,36 +103,32 @@ async def run_search_logic(message, context, start, end):
 
         # 🔴 STOP CHECK
         if stop_flags.get(user_id):
-            await message.reply_text("🛑 Search stopped.")
             return
 
         tids = get_tran_ids(roll)
 
+        # 🔴 STOP CHECK
+        if stop_flags.get(user_id):
+            return
+
         for tid in tids:
 
             if stop_flags.get(user_id):
-                await message.reply_text("🛑 Search stopped.")
                 return
 
             data, mobile = get_full_data(tid)
 
+            # 🔴 CRITICAL CHECK
+            if stop_flags.get(user_id):
+                return
+
             if data:
                 count += 1
-
-                try:
-                    await status_msg.delete()
-                except:
-                    pass
 
                 await message.reply_text(
                     f"📄 Result {count}:\n{data}",
                     parse_mode="HTML",
                     reply_markup=get_contact_buttons(mobile)
-                )
-
-                status_msg = await message.reply_text(
-                    f"📊 Progress: {i}/{total} (Roll: {roll})",
-                    reply_markup=stop_button()
                 )
 
         # 🔄 UPDATE
@@ -143,7 +142,7 @@ async def run_search_logic(message, context, start, end):
         except:
             pass
 
-        # ⏱️ DELAY + STOP CHECK
+        # 🔴 STOP CHECK BEFORE DELAY
         if stop_flags.get(user_id):
             return
 
@@ -161,7 +160,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Ready!",
             reply_markup=ReplyKeyboardMarkup(
-                [["🚀 Start"],["📂 Search Database"],["📥 Download Data"]],
+                [["🚀 Start"]],
                 resize_keyboard=True
             )
         )
@@ -169,17 +168,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text.isdigit():
         last_range[user_id] = (int(text), int(text))
-        await run_search_logic(update.message, context, int(text), int(text))
+        await run_search_logic(update.message, int(text), int(text))
 
     elif "-" in text:
         try:
             s, e = map(int, text.split("-"))
             last_range[user_id] = (s, e)
-            await run_search_logic(update.message, context, s, e)
+            await run_search_logic(update.message, s, e)
         except:
             pass
 
-# 🔥 STOP HANDLER
+# ================= STOP HANDLER =================
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -187,13 +186,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "stop_search":
         stop_flags[user_id] = True
         await query.answer("🛑 Stopping...")
-        await query.message.reply_text("🛑 Search stopping...")
 
     elif query.data == "next_range":
         await query.answer()
         s, e = last_range.get(user_id, (0,0))
         diff = e - s + 1
-        await run_search_logic(query.message, context, e+1, e+diff)
+        await run_search_logic(query.message, e+1, e+diff)
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -205,5 +203,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("🤖 Bot Running FINAL FIXED VERSION...")
+    print("🤖 FINAL BOT RUNNING...")
     app.run_polling()
