@@ -1,12 +1,5 @@
 from flask import Flask
 from threading import Thread
-import requests
-import time
-import csv
-import os
-from bs4 import BeautifulSoup
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # ================= KEEP ALIVE =================
 app_web = Flask('')
@@ -22,12 +15,19 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# ================= ORIGINAL CODE UPDATED =================
-TOKEN="8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg"
+# ================= ORIGINAL CODE =================
+import requests
+import time
+import csv
+import os
+from bs4 import BeautifulSoup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+
+TOKEN = "8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg"
 FILE_NAME = "data.csv"
 
 last_range = {}
-stop_requests = {} # স্টপ কমান্ড ট্র্যাক করার জন্য
 
 def init_file():
     if not os.path.exists(FILE_NAME):
@@ -48,22 +48,25 @@ def save_data(name, roll, board, mobile, date, tran_id):
 
 def get_tran_ids(roll):
     url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Search?searchStr={roll}"
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    ids = []
     try:
-        res = requests.get(url, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        ids = []
         rows = soup.find("table").find_all("tr")[1:]
         for r in rows:
             ids.append(r.find_all("td")[1].text.strip())
-        return ids
     except:
-        return []
+        pass
+
+    return ids
 
 def get_full_data(tran_id):
     url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Voucher/{tran_id}"
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+
     try:
-        res = requests.get(url, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
         lines = [l.strip() for l in soup.get_text("\n").split("\n") if l.strip()]
 
         def find(label):
@@ -88,6 +91,7 @@ Mobile : {mobile}
 Date   : {date}
 ID     : {tran_id}
 </pre>"""
+
         return text, mobile
     except:
         return None, None
@@ -104,16 +108,16 @@ def get_contact_buttons(mobile):
     n = format_number_bd(mobile)
     if not n:
         return None
+
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📱 WhatsApp", url=f"https://wa.me/{n}"),
         InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/+{n}")
     ]])
 
-def stop_button():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop Search", callback_data="stop_search")]])
-
 def next_button():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Next 500", callback_data="next500")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➡️ Next 500", callback_data="next500")]
+    ])
 
 def get_keyboard():
     return ReplyKeyboardMarkup(
@@ -125,33 +129,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Welcome!", reply_markup=get_keyboard())
 
 async def run_range(message, context, start, end):
-    user_id = message.chat_id
-    stop_requests[user_id] = False # শুরুতে স্টপ বন্ধ থাকবে
-    
-    status = await message.reply_text("⏳ Processing...", reply_markup=stop_button())
+    status = await message.reply_text("⏳ Processing...")
     count = 0
 
     for roll in range(start, end+1):
-        # চেক করবে স্টপ বাটন চাপা হয়েছে কি না
-        if stop_requests.get(user_id):
-            await message.reply_text(f"🛑 Search Stopped!\n📊 Found so far: {count}")
-            return
-
-        if roll % 5 == 0:
-            try: await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}", reply_markup=stop_button())
-            except: pass
+        await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}")
 
         for tid in get_tran_ids(roll):
             data, mobile = get_full_data(tid)
+
             if data:
                 count += 1
-                await message.reply_text(f"📄 Result {count}:\n{data}", parse_mode="HTML", reply_markup=get_contact_buttons(mobile))
-        
-        # প্রতিটি রোল চেক করার পর ২ সেকেন্ড বিরতি
+                await message.reply_text(
+                    f"📄 Result {count}:\n{data}",
+                    parse_mode="HTML",
+                    reply_markup=get_contact_buttons(mobile)
+                )
+
         time.sleep(2)
 
     await status.edit_text(f"✅ Done!\n📊 Total: {count}")
-    await message.reply_text(f"👉 Next {end-start+1}?", reply_markup=next_button())
+    await message.reply_text("👉 Next 500?", reply_markup=next_button())
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -177,7 +175,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, tid in enumerate(get_tran_ids(int(text)),1):
             data, mobile = get_full_data(tid)
             if data:
-                await update.message.reply_text(f"📄 Result {i}:\n{data}", parse_mode="HTML", reply_markup=get_contact_buttons(mobile))
+                await update.message.reply_text(
+                    f"📄 Result {i}:\n{data}",
+                    parse_mode="HTML",
+                    reply_markup=get_contact_buttons(mobile)
+                )
         return
 
     if "-" in text:
@@ -187,7 +189,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Wrong format")
             return
 
-        # লিমিট ৫০০
         if (end_r-start_r+1) > 500:
             await update.message.reply_text("❌ Max 500")
             return
@@ -198,41 +199,34 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("❌ Invalid input")
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    
-    # বাটন গায়েব করার জন্য
-    await query.edit_message_reply_markup(reply_markup=None)
+    await query.answer()
 
-    if query.data == "stop_search":
-        stop_requests[user_id] = True
-        await query.answer("🛑 Stopping Search...")
+    user_id = query.from_user.id
+
+    if user_id not in last_range:
+        await query.message.reply_text("❌ আগে search করো")
         return
 
-    if query.data == "next500":
-        await query.answer()
-        if user_id not in last_range:
-            await query.message.reply_text("❌ আগে search করো")
-            return
+    start_r, end_r = last_range[user_id]
+    new_start = end_r + 1
+    new_end = end_r + 500
 
-        start_r, end_r = last_range[user_id]
-        diff = end_r - start_r + 1
-        new_start = end_r + 1
-        new_end = end_r + diff
-        last_range[user_id] = (new_start, new_end)
+    last_range[user_id] = (new_start, new_end)
 
-        await query.message.reply_text(f"🔄 Auto: {new_start}-{new_end}")
-        await run_range(query.message, context, new_start, new_end)
+    await query.message.reply_text(f"🔄 Auto: {new_start}-{new_end}")
+    await run_range(query.message, context, new_start, new_end)
 
 # ================= RUN =================
 init_file()
-keep_alive()
+keep_alive()  # 🔥 THIS IS THE MAGIC
 
 app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle))
-app.add_handler(CallbackQueryHandler(handle_callback))
 
-print("🤖 BOT RUNNING - 500 LIMIT | 2S DELAY | STOP BUTTON ACTIVE...")
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT, handle))
+app.add_handler(CallbackQueryHandler(handle_next))
+
+print("🤖 BOT RUNNING 24/7...")
 app.run_polling()
