@@ -6,6 +6,7 @@ import os
 from bs4 import BeautifulSoup
 from flask import Flask
 from threading import Thread
+import threading # নতুন থ্রেডিং লাইব্রেরি
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -13,7 +14,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 app_web = Flask('')
 @app_web.route('/')
 def home(): return "Bot is running!"
-
 def run(): app_web.run(host='0.0.0.0', port=10000)
 def keep_alive(): Thread(target=run).start()
 
@@ -21,7 +21,9 @@ def keep_alive(): Thread(target=run).start()
 TOKEN = "8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg" 
 FILE_NAME = "data.csv"
 
-user_search_active = {} 
+# এটিই আপনার স্টপ বাটনকে সুপারফাস্ট করবে
+user_stop_event = {} 
+user_search_active = {}
 last_range = {}
 
 def init_file():
@@ -37,7 +39,7 @@ def save_data(name, roll, board, mobile, date, tran_id):
 def get_tran_ids(roll):
     url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Search?searchStr={roll}"
     try:
-        res = requests.get(url, timeout=7)
+        res = requests.get(url, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         table = soup.find("table")
         if not table: return []
@@ -47,7 +49,7 @@ def get_tran_ids(roll):
 def get_full_data(tran_id):
     url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Voucher/{tran_id}"
     try:
-        res = requests.get(url, timeout=7)
+        res = requests.get(url, timeout=5)
         soup = BeautifulSoup(res.text, "html.parser")
         lines = [l.strip() for l in soup.get_text("\n").split("\n") if l.strip()]
         def find(label):
@@ -75,56 +77,58 @@ def get_contact_buttons(mobile):
 # ----------------- কোর সার্চ ইঞ্জিন -----------------
 async def run_search(message, context, start, end):
     user_id = message.chat_id
+    
     if user_search_active.get(user_id, False):
         await message.reply_text("⚠️ একটি সার্চ ইতিমধ্যে চলছে!")
         return
 
     user_search_active[user_id] = True
+    user_stop_event[user_id] = False # স্টপ ইভেন্ট রিসেট
+    
     status_msg = await message.reply_text("⏳ সার্চ শুরু হচ্ছে...", reply_markup=stop_button())
     count = 0
     total = end - start + 1
 
     try:
         for i, roll in enumerate(range(start, end+1), 1):
-            if not user_search_active.get(user_id, False): break
+            # একদম সাথে সাথে চেক
+            if user_stop_event.get(user_id, False): break
 
             found_now = False
             tids = get_tran_ids(roll)
             for tid in tids:
-                if not user_search_active.get(user_id, False): break
+                if user_stop_event.get(user_id, False): break
                 data, mobile = get_full_data(tid)
                 if data:
                     count += 1
                     found_now = True
-                    # পুরনো স্ট্যাটাস মেসেজ ডিলিট করা
                     try: await status_msg.delete()
                     except: pass
                     
-                    # রেজাল্ট পাঠানো
                     await message.reply_text(f"📄 Result {count}:\n{data}", parse_mode="HTML", reply_markup=get_contact_buttons(mobile))
-                    
-                    # নতুন স্ট্যাটাস মেসেজ একদম নিচে পাঠানো
                     status_msg = await message.reply_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}\n✅ Progress: {i}/{total}", reply_markup=stop_button())
 
             if not found_now and (i % 3 == 0 or i == total):
-                if not user_search_active.get(user_id, False): break
+                if user_stop_event.get(user_id, False): break
                 try:
                     await status_msg.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}\n✅ Progress: {i}/{total}", reply_markup=stop_button())
                 except: pass
 
+            # ২ সেকেন্ড ওয়েট করার সময়ও যেন স্টপ বাটন কাজ করে
             for _ in range(20):
-                if not user_search_active.get(user_id, False): break
+                if user_stop_event.get(user_id, False): break
                 await asyncio.sleep(0.1)
                 
     finally:
-        is_stopped = not user_search_active.get(user_id, False)
+        was_stopped = user_stop_event.get(user_id, False)
         user_search_active[user_id] = False
-        try: await status_msg.delete() # শেষ হলে স্ট্যাটাস মেসেজ মুছে ফেলা
+        try: await status_msg.delete()
         except: pass
         
-        final_text = f"🛑 Search Stopped!\n📊 Total Found: {count}" if is_stopped else f"✅ Done!\n📊 Total: {count}"
-        await message.reply_text(final_text)
-        if not is_stopped:
+        if was_stopped:
+            await message.reply_text(f"🛑 Search Stopped!\n📊 Total Found: {count}")
+        else:
+            await message.reply_text(f"✅ Done!\n📊 Total: {count}")
             await message.reply_text(f"👉 Next {total}?", reply_markup=next_button(total))
 
 # ----------------- হ্যান্ডলারস -----------------
@@ -135,10 +139,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🚀 Start":
         await update.message.reply_text("✅ Ready!", reply_markup=ReplyKeyboardMarkup([["🚀 Start"],["📂 Search Database"],["📥 Download Data"]], resize_keyboard=True))
     elif text == "📂 Search Database":
-        await update.message.reply_text("👉 Roll বা Range দিন।")
+        await update.message.reply_text("👉 Roll বা Range দিন (Max 500)।")
     elif text == "📥 Download Data":
         if os.path.exists(FILE_NAME): await update.message.reply_document(open(FILE_NAME,"rb"))
-        else: await update.message.reply_text("❌ কোনো ডাটা নেই।")
+        else: await update.message.reply_text("❌ No data")
     elif text.isdigit():
         roll = int(text)
         last_range[user_id] = (roll, roll)
@@ -146,18 +150,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "-" in text:
         try:
             s, e = map(int, text.split("-"))
-            if (e-s+1) > 500: await update.message.reply_text("❌ সর্বোচ্চ ৫০০ রোল লিমিট।")
+            if (e-s+1) > 500: await update.message.reply_text("❌ Max 500 limit")
             else:
                 last_range[user_id] = (s, e)
                 await run_search(update.message, context, s, e)
-        except: await update.message.reply_text("❌ ফরম্যাট: 1001-1500")
+        except: await update.message.reply_text("❌ Format: 1001-1500")
 
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    
     if query.data == "stop_search":
-        user_search_active[user_id] = False
-        await query.answer("🛑 বন্ধ করা হচ্ছে...")
+        user_stop_event[user_id] = True # কমান্ড পাওয়া মাত্রই ট্রু করে দেবে
+        await query.answer("🛑 সার্চ বন্ধ করা হচ্ছে...")
+        await query.edit_message_reply_markup(reply_markup=None)
     elif query.data == "next_range":
         await query.answer()
         s, e = last_range.get(user_id, (0,0))
@@ -174,5 +180,5 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_query))
-    print("🤖 Bot is Online & Auto-Scroll Logic Active...")
+    print("🤖 Bot is Online - Stop Button Fix Active...")
     app.run_polling()
