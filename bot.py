@@ -1,5 +1,12 @@
 from flask import Flask
 from threading import Thread
+import requests
+import time
+import csv
+import os
+from bs4 import BeautifulSoup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # ================= KEEP ALIVE =================
 app_web = Flask('')
@@ -15,16 +22,8 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# ================= ORIGINAL CODE =================
-import requests
-import time
-import csv
-import os
-from bs4 import BeautifulSoup
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-
-TOKEN = "8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg"
+# ================= ORIGINAL CODE (UPDATED LIMIT & DELAY) =================
+TOKEN="8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg"
 FILE_NAME = "data.csv"
 
 last_range = {}
@@ -133,7 +132,10 @@ async def run_range(message, context, start, end):
     count = 0
 
     for roll in range(start, end+1):
-        await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}")
+        # স্ট্যাটাস আপডেট যেন বারবার না হয় (টেলিগ্রাম লিমিট বাঁচাতে)
+        if roll % 5 == 0:
+            try: await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}")
+            except: pass
 
         for tid in get_tran_ids(roll):
             data, mobile = get_full_data(tid)
@@ -145,7 +147,8 @@ async def run_range(message, context, start, end):
                     parse_mode="HTML",
                     reply_markup=get_contact_buttons(mobile)
                 )
-
+        
+        # --- প্রতিটি রোল চেক করার পর ২ সেকেন্ড গ্যাপ ---
         time.sleep(2)
 
     await status.edit_text(f"✅ Done!\n📊 Total: {count}")
@@ -189,6 +192,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Wrong format")
             return
 
+        # আপডেট করা লিমিট: ৫০০
         if (end_r-start_r+1) > 500:
             await update.message.reply_text("❌ Max 500")
             return
@@ -220,13 +224,13 @@ async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= RUN =================
 init_file()
-keep_alive()  # 🔥 THIS IS THE MAGIC
+keep_alive()
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT, handle))
+app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle))
 app.add_handler(CallbackQueryHandler(handle_next))
 
-print("🤖 BOT RUNNING 24/7...")
+print("🤖 BOT RUNNING WITH 500 LIMIT & 2S DELAY...")
 app.run_polling()
