@@ -23,6 +23,7 @@ FILE_NAME = "data.csv"
 
 search_context = {}
 last_range = {}
+stop_flags = {}   # 🔥 NEW
 
 # ================= FILE =================
 def init_file():
@@ -85,8 +86,10 @@ def get_contact_buttons(mobile):
     ])
 
 # ================= MAIN ENGINE =================
-async def run_search_logic(message, context, start, end, run_id):
+async def run_search_logic(message, context, start, end):
     user_id = message.chat_id
+
+    stop_flags[user_id] = False  # 🔥 reset
 
     status_msg = await message.reply_text("⏳ Starting...", reply_markup=stop_button())
 
@@ -96,16 +99,16 @@ async def run_search_logic(message, context, start, end, run_id):
     for i, roll in enumerate(range(start, end+1), 1):
 
         # 🔴 STOP CHECK
-        if search_context.get(user_id, {}).get('run_id') != run_id:
-            await message.reply_text("🛑 Stopped!")
+        if stop_flags.get(user_id):
+            await message.reply_text("🛑 Search stopped.")
             return
 
         tids = get_tran_ids(roll)
 
         for tid in tids:
 
-            if search_context.get(user_id, {}).get('run_id') != run_id:
-                await message.reply_text("🛑 Stopped!")
+            if stop_flags.get(user_id):
+                await message.reply_text("🛑 Search stopped.")
                 return
 
             data, mobile = get_full_data(tid)
@@ -129,7 +132,7 @@ async def run_search_logic(message, context, start, end, run_id):
                     reply_markup=stop_button()
                 )
 
-        # 🔄 LIVE UPDATE (every roll)
+        # 🔄 UPDATE
         try:
             await status_msg.edit_text(
                 f"⏳ Processing Roll: {roll}\n"
@@ -140,20 +143,14 @@ async def run_search_logic(message, context, start, end, run_id):
         except:
             pass
 
-        # ⏱️ DELAY (IMPORTANT)
+        # ⏱️ DELAY + STOP CHECK
+        if stop_flags.get(user_id):
+            return
+
         await asyncio.sleep(2)
 
-    # ✅ FINISH
-    if search_context.get(user_id, {}).get('run_id') == run_id:
-        try:
-            await status_msg.delete()
-        except:
-            pass
-
-        await message.reply_text(f"✅ Done!\n📊 Total Found: {count}")
-        await message.reply_text(f"👉 Next {total}?", reply_markup=next_button(total))
-
-        search_context[user_id] = {'status': 'idle'}
+    await message.reply_text(f"✅ Done!\n📊 Total Found: {count}")
+    await message.reply_text(f"👉 Next {total}?", reply_markup=next_button(total))
 
 # ================= HANDLERS =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,40 +167,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    run_id = time.time()
-    search_context[user_id] = {'run_id': run_id, 'status': 'running'}
-
     if text.isdigit():
         last_range[user_id] = (int(text), int(text))
-        await run_search_logic(update.message, context, int(text), int(text), run_id)
+        await run_search_logic(update.message, context, int(text), int(text))
 
     elif "-" in text:
         try:
             s, e = map(int, text.split("-"))
             last_range[user_id] = (s, e)
-            await run_search_logic(update.message, context, s, e, run_id)
+            await run_search_logic(update.message, context, s, e)
         except:
             pass
 
+# 🔥 STOP HANDLER
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
 
     if query.data == "stop_search":
-        search_context[user_id] = {'run_id': None, 'status': 'idle'}
-        await query.answer("🛑 Stopped!")
-        await query.message.reply_text("🛑 Search stopped.")
+        stop_flags[user_id] = True
+        await query.answer("🛑 Stopping...")
+        await query.message.reply_text("🛑 Search stopping...")
 
     elif query.data == "next_range":
         await query.answer()
-
         s, e = last_range.get(user_id, (0,0))
         diff = e - s + 1
-
-        run_id = time.time()
-        search_context[user_id] = {'run_id': run_id, 'status': 'running'}
-
-        await run_search_logic(query.message, context, e+1, e+diff, run_id)
+        await run_search_logic(query.message, context, e+1, e+diff)
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -215,5 +205,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("🤖 Bot Running Final Version...")
+    print("🤖 Bot Running FINAL FIXED VERSION...")
     app.run_polling()
