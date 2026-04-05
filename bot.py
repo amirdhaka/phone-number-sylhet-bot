@@ -1,6 +1,7 @@
 from flask import Flask
 from threading import Thread
 import requests
+import asyncio  # এটি স্টপ বাটন দ্রুত কাজ করার জন্য জরুরি
 import time
 import csv
 import os
@@ -8,7 +9,7 @@ from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# ================= KEEP ALIVE (For 24/7 Running) =================
+# ================= KEEP ALIVE =================
 app_web = Flask('')
 
 @app_web.route('/')
@@ -27,7 +28,7 @@ TOKEN = "8720872771:AAF1BSkDHA2KE_clSS8pqb9a0BzTsaPZHmg" # আপনার ব�
 FILE_NAME = "data.csv"
 
 last_range = {}
-stop_requests = {} # স্টপ কমান্ড ট্র্যাক করার জন্য
+stop_requests = {} 
 
 def init_file():
     if not os.path.exists(FILE_NAME):
@@ -111,8 +112,8 @@ def get_contact_buttons(mobile):
 def stop_button():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop Search", callback_data="stop_search")]])
 
-def next_button():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Next 500", callback_data="next500")]])
+def next_button(limit_text):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"➡️ Next {limit_text}", callback_data="next_range")]])
 
 def get_keyboard():
     return ReplyKeyboardMarkup(
@@ -127,31 +128,39 @@ async def run_range(message, context, start, end):
     user_id = message.chat_id
     stop_requests[user_id] = False
     
-    status = await message.reply_text("⏳ Processing...", reply_markup=stop_button())
+    status = await message.reply_text("⏳ প্রসেসিং শুরু হচ্ছে...", reply_markup=stop_button())
     count = 0
     total_rolls = end - start + 1
 
     for i, roll in enumerate(range(start, end+1), 1):
-        # ইউজার স্টপ বাটন চেপেছে কি না চেক করা
+        # এখন স্টপ বাটন চাপা মাত্রই কাজ করবে
         if stop_requests.get(user_id):
             await message.reply_text(f"🛑 Search Stopped by User!\n📊 Found: {count}")
             return
 
-        if i % 5 == 0 or i == total_rolls:
-            try: await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}\n✅ Progress: {i}/{total_rolls}", reply_markup=stop_button())
-            except: pass
-
-        for tid in get_tran_ids(roll):
+        found_now = False
+        tids = get_tran_ids(roll)
+        for tid in tids:
             data, mobile = get_full_data(tid)
             if data:
                 count += 1
+                found_now = True
                 await message.reply_text(f"📄 Result {count}:\n{data}", parse_mode="HTML", reply_markup=get_contact_buttons(mobile))
-        
-        # আপনার রিকোয়েস্ট অনুযায়ী ২ সেকেন্ড গ্যাপ
-        time.sleep(2)
 
-    await status.edit_text(f"✅ Done!\n📊 Total: {count}")
-    await message.reply_text(f"👉 Next {total_rolls}?", reply_markup=next_button())
+        # ঘনঘন আপডেট (প্রতি ৩ রোল পর পর অথবা ডাটা পাওয়া গেলে)
+        if i % 3 == 0 or i == total_rolls or found_now:
+            try:
+                await status.edit_text(
+                    f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}\n✅ Progress: {i}/{total_rolls}",
+                    reply_markup=stop_button()
+                )
+            except: pass
+
+        # ২ সেকেন্ড গ্যাপ (অ্যাসিনক্রোনাস স্লিপ যাতে স্টপ বাটন কাজ করে)
+        await asyncio.sleep(2)
+
+    await status.edit_text(f"✅ Done!\n📊 Total Found: {count}")
+    await message.reply_text(f"👉 Next {total_rolls}?", reply_markup=next_button(total_rolls))
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -172,7 +181,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No data")
         return
 
-    # সিঙ্গেল রোল সার্চ (Next বাটন সহ)
     if text.isdigit():
         roll = int(text)
         await update.message.reply_text(f"⏳ Searching for: {roll}...")
@@ -186,10 +194,9 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"📄 Result {i}:\n{data}", parse_mode="HTML", reply_markup=get_contact_buttons(mobile))
         
         last_range[user_id] = (roll, roll)
-        await update.message.reply_text("👉 Next Roll?", reply_markup=next_button())
+        await update.message.reply_text("👉 Next Roll?", reply_markup=next_button(1))
         return
 
-    # রেঞ্জ সার্চ
     if "-" in text:
         try:
             start_r, end_r = map(int, text.split("-"))
@@ -211,18 +218,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    # বাটন গায়েব করার জন্য (অটো রিমুভ)
+    # বাটন রিমুভ করা
     await query.edit_message_reply_markup(reply_markup=None)
 
     if query.data == "stop_search":
         stop_requests[user_id] = True
-        await query.answer("🛑 Stopping Search...")
+        await query.answer("🛑 Stopping...")
         return
 
-    if query.data == "next500":
+    if query.data == "next_range":
         await query.answer()
         if user_id not in last_range:
-            await query.message.reply_text("❌ Error: No last range found!")
+            await query.message.reply_text("❌ No last range found!")
             return
 
         start_r, end_r = last_range[user_id]
@@ -243,5 +250,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle))
 app.add_handler(CallbackQueryHandler(handle_callback))
 
-print("🤖 BOT RUNNING - FULL VERSION...")
+print("🤖 BOT ONLINE - STOP BUTTON & FAST UPDATE ACTIVE...")
 app.run_polling()
